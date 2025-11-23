@@ -14,3 +14,8 @@ PERGUNTA DO COLABORADOR:
 {question}
 
 RESPOSTA:"""
+
+CONTEXTUALIZE_Q_SYSTEM_PROMPT = """Dado um histórico de bate-papo e a última pergunta do usuário 
+(que pode referenciar o contexto anterior), formule uma pergunta independente que possa ser entendida 
+sem o histórico de bate-papo. 
+NÃO responda à pergunta, apenas reformule-a se necessário ou retorne-a como está."""
