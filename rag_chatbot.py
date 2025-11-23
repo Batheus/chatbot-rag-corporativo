@@ -2,30 +2,33 @@ import os
 import getpass
 import sys
 import warnings
+import shutil
 from dotenv import load_dotenv
 
 warnings.filterwarnings("ignore", message=".*Pydantic V1 functionality.*")
+warnings.filterwarnings("ignore", category=UserWarning, message=".*allow_dangerous_deserialization.*")
 
 try:
     from prompts import RAG_PROMPT_TEMPLATE
 except ImportError:
     print("Erro: Arquivo 'prompts.py' não encontrado.")
-    print("Certifique-se de criar o arquivo prompts.py na mesma pasta.")
     sys.exit(1)
 
 try:
     from langchain_community.document_loaders import PyPDFLoader
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-    from langchain_community.vectorstores import SKLearnVectorStore
+    from langchain_community.vectorstores import FAISS 
     from langchain_core.prompts import PromptTemplate
     from langchain_core.runnables import RunnablePassthrough
     from langchain_core.output_parsers import StrOutputParser
 except ImportError as e:
     print(f"Erro de importação: {e}")
+    print("Instale o FAISS: pip install faiss-cpu")
     sys.exit(1)
 
 load_dotenv()
+PERSIST_DIRECTORY = "./faiss_db_index"
 
 def setup_api_key():
     """Configura a API Key do Google."""
@@ -40,42 +43,60 @@ def load_and_process_pdf(pdf_path):
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(f"Arquivo não encontrado: {pdf_path}")
     
-    print(f"Carregando {pdf_path}...")
+    print(f"--- Processando novo arquivo PDF: {pdf_path} ---")
     loader = PyPDFLoader(pdf_path)
     docs = loader.load()
     
-    print(f"Dividindo texto em chunks...")
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
         chunk_overlap=200,
         separators=["\n\n", "\n", " ", ""]
     )
     splits = text_splitter.split_documents(docs)
-    print(f"Total de chunks criados: {len(splits)}")
+    print(f"Documento dividido em {len(splits)} chunks.")
     return splits
 
-def setup_vector_store(splits):
-    """Cria o vector store em memória."""
-    print("Gerando embeddings... (Isso processa o texto em vetores)")
+def get_vector_store(pdf_path):
+    """
+    Lógica de Persistência com FAISS.
+    Verifica se o índice já existe. Se sim, carrega. Se não, cria e salva.
+    """
+    embedding_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+    if os.path.exists(PERSIST_DIRECTORY):
+        print(f"--- Carregando Índice FAISS Existente de {PERSIST_DIRECTORY} ---")
+        try:
+            vectorstore = FAISS.load_local(
+                folder_path=PERSIST_DIRECTORY, 
+                embeddings=embedding_model,
+                allow_dangerous_deserialization=True 
+            )
+            return vectorstore
+        except Exception as e:
+            print(f"Erro ao carregar banco existente: {e}")
+            print("Recriando banco...")
     
-    vectorstore = SKLearnVectorStore.from_documents(
+    print("--- Criando Novo Índice FAISS (Isso pode demorar um pouco) ---")
+    splits = load_and_process_pdf(pdf_path)
+    
+    vectorstore = FAISS.from_documents(
         documents=splits,
-        embedding=embeddings
+        embedding=embedding_model
     )
+    
+    vectorstore.save_local(PERSIST_DIRECTORY)
+    print("--- Índice FAISS Salvo com Sucesso! ---")
+        
     return vectorstore
 
 def get_rag_chain(retriever):
     """Configura a cadeia RAG com o prompt importado."""
     
-    # Modelo Gemini 2.5 Flash (Rápido e Eficiente)
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.5-flash",
         temperature=0.1
     )
     
-    # Usa o template importado do arquivo prompts.py
     prompt = PromptTemplate(
         template=RAG_PROMPT_TEMPLATE,
         input_variables=["context", "question"]
@@ -94,14 +115,14 @@ def get_rag_chain(retriever):
     return rag_chain
 
 def main():
-    print("=== Chatbot Corporativo RAG (Modular) ===")
+    print("=== Chatbot Corporativo RAG (Persistência FAISS) ===")
     
     setup_api_key()
     pdf_path = "Manual_Colaborador_BatheusDev.pdf"
     
     try:
-        splits = load_and_process_pdf(pdf_path)
-        vectorstore = setup_vector_store(splits)
+        vectorstore = get_vector_store(pdf_path)
+        
         retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
         rag_chain = get_rag_chain(retriever)
         
@@ -117,7 +138,7 @@ def main():
             if not query:
                 continue
                 
-            print("Consultando manual...")
+            print("Consultando base de conhecimento...")
             try:
                 response = rag_chain.invoke(query)
                 print(f"\nResposta:\n{response}")
